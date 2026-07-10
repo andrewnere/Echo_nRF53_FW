@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"name": "v2.6.1",
+			"path": "../../../../opt/nordic/ncs/v2.6.1"
+		}
+	],
+	"settings": {}
+}

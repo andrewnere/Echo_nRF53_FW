@@ -1,0 +1,21 @@
+/*
+ * Board overlay for nRF5340-DK
+ *
+ * Sets I2C to 400 kHz (fast-mode) for the LSM6DSO on the arduino_i2c
+ * header (QWIIC-compatible, SDA=D14/P1.02, SCL=D15/P1.03).
+ *
+ * The LSM6DSO is NOT bound to the Zephyr sensor driver here — imu.c
+ * accesses its registers directly via the I2C bus to use the on-chip
+ * FIFO and hardware timestamps.
+ *
+ * UART0 baud rate raised to 460800 to sustain 208 Hz CSV output.
+ */
+
+&arduino_i2c {
+	status = "okay";
+	clock-frequency = <400000>;
+};
+
+&uart0 {
+	current-speed = <460800>;
+};
