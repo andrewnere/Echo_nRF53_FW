@@ -1,0 +1,10 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 0
+AllowShortFunctionsOnASingleLine: InlineOnly
+AlignEscapedNewlines: Left
+PointerAlignment: Left
+AlignConsecutiveDeclarations: Consecutive
+AlignConsecutiveMacros: AcrossEmptyLines
+AlignTrailingComments: true
+InsertNewlineAtEOF: true

@@ -1,0 +1,10 @@
+build*/
+
+# Zephyr and Nordic build directories
+build/
+.kconfig_df_check
+.config
+
+# VS Code and Toolchain specifics
+.vscode/
+.mwb/
