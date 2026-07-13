@@ -27,9 +27,14 @@
  *                          macOS and Windows pair with this as a standard mouse.
  *   ENABLE_BLE_RAW_DATA  — Raw IMU GATT notify service (identity 1, "VM-Raw")
  *                          Python / bleak script on Mac or Windows connects here.
+ *   ENABLE_NRF53_AS_CENTRAL — nRF53 also acts as a BLE Central, connecting out
+ *                          to an ESP32 peripheral and mapping its 4 ASCII
+ *                          commands ("cmd1".."cmd4") to LED1-LED4. Disables
+ *                          the heartbeat blink (frees led0 for cmd1).
  * ============================================================ */
 #define ENABLE_BLE_HID
 #define ENABLE_BLE_RAW_DATA
+#define ENABLE_NRF53_AS_CENTRAL
 
 /* ============================================================
  * Output mode — sets the active mode at boot.

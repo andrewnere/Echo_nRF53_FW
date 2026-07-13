@@ -26,6 +26,7 @@
 #include <bluetooth/services/hids.h>
 #endif
 
+#include "ble_central.h"
 #include "ble_raw_data.h"
 #include "imu.h"
 #include "imu_mouse.h"
@@ -34,7 +35,11 @@ LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
 /* ============================================================
  * LED — 3-second blink sanity check
+ * Disabled under ENABLE_NRF53_AS_CENTRAL: led0 is repurposed as LED1,
+ * driven by incoming ESP32 commands instead (see ble_central.c).
  * ============================================================ */
+
+#ifndef ENABLE_NRF53_AS_CENTRAL
 
 #define LED_NODE DT_ALIAS(led0)
 static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED_NODE, gpios);
@@ -44,6 +49,8 @@ static void led_toggle_cb(struct k_timer *timer) {
     gpio_pin_toggle_dt(&led);
 }
 K_TIMER_DEFINE(led_timer, led_toggle_cb, NULL);
+
+#endif /* !ENABLE_NRF53_AS_CENTRAL */
 
 /* ============================================================
  * Mode tracking
@@ -239,7 +246,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
            info.id, info.le.interval, (float)info.le.interval * 1.25f);
 
 #ifdef ENABLE_BLE_HID
-    if (info.id == BT_ID_DEFAULT) {
+    if (info.id == BT_ID_DEFAULT && info.role == BT_CONN_ROLE_PERIPHERAL) {
         bt_hids_connected(&hids_obj, conn);
         current_conn = bt_conn_ref(conn);
         bt_conn_set_security(conn, BT_SECURITY_L2);
@@ -263,7 +270,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     printk("DISCONNECTED: id=%u reason=%u\n", info.id, reason);
 
 #ifdef ENABLE_BLE_HID
-    if (info.id == BT_ID_DEFAULT) {
+    if (info.id == BT_ID_DEFAULT && info.role == BT_CONN_ROLE_PERIPHERAL) {
         bt_hids_disconnected(&hids_obj, conn);
         bt_conn_unref(current_conn);
         current_conn = NULL;
@@ -389,16 +396,18 @@ static void setup_advertising(void)
 
 int main(void)
 {
+#ifndef ENABLE_NRF53_AS_CENTRAL
     int ret;
 
     if (!gpio_is_ready_dt(&led)) { return -1; }
     ret = gpio_pin_configure_dt(&led, GPIO_OUTPUT_ACTIVE);
     if (ret < 0) { return ret; }
     k_timer_start(&led_timer, K_SECONDS(3), K_SECONDS(3));
+#endif
 
     imu_set_mode_change_cb(apply_output_mode);
 
-#if defined(ENABLE_BLE_HID) || defined(ENABLE_BLE_RAW_DATA)
+#if defined(ENABLE_BLE_HID) || defined(ENABLE_BLE_RAW_DATA) || defined(ENABLE_NRF53_AS_CENTRAL)
     bt_conn_auth_cb_register(&auth_cb);
     bt_conn_auth_info_cb_register(&auth_info_cb);
     bt_enable(NULL);
@@ -424,6 +433,10 @@ int main(void)
 
     apply_output_mode(DEFAULT_OUTPUT_MODE);
     setup_advertising();
+
+#ifdef ENABLE_NRF53_AS_CENTRAL
+    ble_central_init();
+#endif
 
 #else  /* no BLE features compiled in — UART-only build */
     apply_output_mode(DEFAULT_OUTPUT_MODE);
