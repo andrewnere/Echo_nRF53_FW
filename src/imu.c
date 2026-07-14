@@ -21,9 +21,6 @@
  *   - Hardware timestamp inserted every sample (decimation = 1)
  *   - FIFO depth: 512 words; 3 words per sample → ~170 samples max
  *
- * Sensor configuration:
- *   - Accel: ±2 g,   high-performance mode
- *   - Gyro : ±500 dps, high-performance mode
  */
 
 #include <string.h>
@@ -41,7 +38,6 @@ LOG_MODULE_REGISTER(imu, LOG_LEVEL_INF);
  * I2C bus and device address
  * ============================================================ */
 
-/* arduino_i2c = i2c1 on the nRF5340-DK (D14=SDA, D15=SCL) */
 #define I2C_BUS_NODE DT_NODELABEL(arduino_i2c)
 #define LSM6DSO_ADDR 0x6B /* SA0/SDO pin tied to VCC on this breakout */
 
@@ -99,29 +95,9 @@ static const struct device* i2c_bus;
  * Available options (written into CTRL2_G alongside the ODR field):
  *   GYRO_FS_125DPS  0x02   FS_125=1 → ±125  dps,  4.375 mdps/LSB  (0.004375 dps/LSB)
  *   GYRO_FS_500DPS  0x04   FS_G=01  → ±500  dps,  17.5  mdps/LSB  (0.0175   dps/LSB)
- *
- * ---- TO SWITCH RANGE ----
- * Change GYRO_FS_ACTIVE below to whichever constant you need, then update
- * the matching scale comment in lsm6dso_init() so the header line is correct.
- * No other code needs to change.
  */
-#define GYRO_FS_500DPS 0x04 /* FS_G=010, FS_125=0 → bits[3:0] = 0100 */
+#define GYRO_FS_500DPS 0x04 
 #define GYRO_FS_ACTIVE GYRO_FS_500DPS
-
-/*
- * FIFO_CTRL4 — combined value for continuous mode + timestamp batching.
- *
- * ST register bit layout (little-endian, from lsm6dso_reg.h HAL struct):
- *   bits [7:6] : DEC_TS_BATCH  — 00=off, 01=every sample, 10=/8, 11=/32
- *   bits [5:4] : ODR_T_BATCH   — temperature batch rate (00 = disabled)
- *   bit  [3]   : not used
- *   bits [2:0] : FIFO_MODE     — 110 = continuous
- *
- * 0x46 = 0b01000110:
- *   bits[7:6] = 01  → DEC_TS_BATCH = every sample  ✓
- *   bits[5:4] = 00  → ODR_T_BATCH  = disabled       ✓
- *   bits[2:0] = 110 → continuous mode               ✓
- */
 #define FIFO_CFG_CONTINUOUS_WITH_TS 0x46
 
 /* WHO_AM_I value expected from LSM6DSO */
@@ -293,13 +269,7 @@ static int lsm6dso_init(void) {
     if (ret)
         return ret;
 
-    /*
-     * FIFO watermark: 30 words.
-     * At 208 Hz with 3 words/sample, 30 words ≈ 10 samples ≈ 48 ms of data.
-     * We drain the FIFO every 10 ms so it never fills beyond ~6 words.
-     * The watermark is not used to trigger an interrupt here; it exists so
-     * FIFO_STATUS2[WTM_IA] can flag a backlog if needed for debugging.
-     */
+
     ret = reg_write(REG_FIFO_CTRL1, 30); /* WTM[7:0] */
     if (ret)
         return ret;
@@ -316,11 +286,6 @@ static int lsm6dso_init(void) {
     printk("# timestamp,ax,ay,az,gx,gy,gz\n");
     printk("# timestamp: 25 µs/tick  → ts_us=tick*25, ts_ms=tick*0.025\n");
     printk("# ax/ay/az:  raw int16,  scale 0.061 mg/LSB      (±2 g)\n");
-    /*
-     * ---- GYRO SCALE — keep in sync with GYRO_FS_ACTIVE above ----
-     * ±125 dps: scale = 0.004375 dps/LSB  (4.375 mdps/LSB)
-     * ±500 dps: scale = 0.0175   dps/LSB  (17.5  mdps/LSB)
-     */
     printk("# gx/gy/gz:  raw int16,  scale 0.0175 dps/LSB (±500 dps)\n");
 #endif
     return 0;

@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -43,10 +44,96 @@ BUILD_ASSERT(sizeof(struct imu_notify_payload) == 16, "IMU notify payload must b
 
 static bool s_notify_enabled;
 static bool s_enabled;
+static bool s_active;   /* mirrors mode gating; drives advertising start/stop */
+
+/* ============================================================
+ * Advertising — identity 1 ("VM-Raw")
+ * ============================================================ */
+
+#define RAW_DEVICE_NAME "VM-Raw"
+static const struct bt_data ad_raw[] = {
+    BT_DATA_BYTES(BT_DATA_FLAGS, BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR),
+    BT_DATA(BT_DATA_NAME_COMPLETE, RAW_DEVICE_NAME, sizeof(RAW_DEVICE_NAME) - 1),
+};
+
+static struct bt_le_ext_adv *s_adv_raw;
+static struct bt_conn       *s_raw_conn;
+
+static void start_raw_adv(void)
+{
+    int err = bt_le_ext_adv_start(s_adv_raw, BT_LE_EXT_ADV_START_DEFAULT);
+    if (err == 0)              { printk("RAW_ADV: started\n"); }
+    else if (err != -EALREADY) { printk("RAW_ADV: failed %d\n", err); }
+}
+
+static void raw_adv_work_fn(struct k_work *work) { ARG_UNUSED(work); start_raw_adv(); }
+K_WORK_DEFINE(s_raw_adv_work, raw_adv_work_fn);
+
+static struct k_work_delayable s_raw_param_work;
+
+/* 15–25 ms: smooth IMU streaming while leaving bandwidth for HID. */
+static const struct bt_le_conn_param k_raw_conn_params = {
+    .interval_min = 12,   /* 15 ms */
+    .interval_max = 20,   /* 25 ms */
+    .latency      = 0,
+    .timeout      = 400,  /* 4 s */
+};
+
+static void raw_param_work_fn(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    if (s_raw_conn) {
+        bt_conn_le_param_update(s_raw_conn, &k_raw_conn_params);
+    }
+}
+
+/* ============================================================
+ * Connection callbacks — filtered to identity 1 only; the HID / central
+ * links are handled by their own modules.
+ * ============================================================ */
+
+static void raw_connected(struct bt_conn *conn, uint8_t err)
+{
+    if (err) { return; }
+
+    struct bt_conn_info info;
+    bt_conn_get_info(conn, &info);
+    if (info.id != 1) { return; }
+
+    if (s_raw_conn) { bt_conn_unref(s_raw_conn); }
+    s_raw_conn = bt_conn_ref(conn);
+    k_work_schedule(&s_raw_param_work, K_MSEC(500));
+}
+
+static void raw_disconnected(struct bt_conn *conn, uint8_t reason)
+{
+    ARG_UNUSED(reason);
+
+    struct bt_conn_info info;
+    bt_conn_get_info(conn, &info);
+    if (info.id != 1) { return; }
+
+    k_work_cancel_delayable(&s_raw_param_work);
+    bt_conn_unref(s_raw_conn);
+    s_raw_conn = NULL;
+
+    if (s_active) {
+        k_work_submit(&s_raw_adv_work);
+    }
+}
+
+BT_CONN_CB_DEFINE(raw_conn_callbacks) = {
+    .connected    = raw_connected,
+    .disconnected = raw_disconnected,
+};
 
 void ble_raw_data_set_enabled(bool enabled) {
     s_enabled = enabled;
+    s_active  = enabled;
     printk("STATUS:BLE_RAW:%s\n", enabled ? "on" : "off");
+
+    if (s_adv_raw) { bt_le_ext_adv_stop(s_adv_raw); }
+    if (s_adv_raw && enabled) { start_raw_adv(); }
 }
 
 static void imu_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
@@ -124,6 +211,25 @@ static void on_imu_sample(const struct imu_sample *s) {
 }
 
 void ble_raw_data_init(void) {
+    /* Identity 1 ("VM-Raw") — created once, address persisted to NVS.
+     * Returns -ENOMEM when already at CONFIG_BT_ID_MAX after settings_load(). */
+    int id = bt_id_create(NULL, NULL);
+    if (id < 0 && id != -ENOMEM) { printk("RAW_ID_CREATE_ERR: %d\n", id); }
+
+    struct bt_le_adv_param p = {
+        .id                 = 1,
+        .sid                = 0,
+        .secondary_max_skip = 0,
+        .options            = BT_LE_ADV_OPT_CONNECTABLE,
+        .interval_min       = BT_GAP_ADV_FAST_INT_MIN_2,
+        .interval_max       = BT_GAP_ADV_FAST_INT_MAX_2,
+        .peer               = NULL,
+    };
+    int err = bt_le_ext_adv_create(&p, NULL, &s_adv_raw);
+    if (err) { printk("RAW_ADV_CREATE_ERR: %d\n", err); return; }
+    bt_le_ext_adv_set_data(s_adv_raw, ad_raw, ARRAY_SIZE(ad_raw), NULL, 0);
+
+    k_work_init_delayable(&s_raw_param_work, raw_param_work_fn);
     k_work_init_delayable(&s_drain_work, drain_work_fn);
     imu_add_sample_cb(on_imu_sample);
     LOG_INF("IMU_RAW_DATA service ready");

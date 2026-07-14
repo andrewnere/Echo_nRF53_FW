@@ -9,4 +9,5 @@ target_sources(app PRIVATE
     src/ble_raw_data.c
     src/imu_mouse.c
     src/ble_central.c
+    src/ble_hid.c
 )
