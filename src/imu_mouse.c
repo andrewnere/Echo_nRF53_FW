@@ -1,23 +1,5 @@
 /*
  * imu_mouse.c — IMU-to-mouse-delta processor for LSM6DSO on nRF5340
- *
- * Ported from the Python IMU processor algorithm.  Two stages:
- *
- * Stage 1 — Sensor Fusion
- *   - Collect IMU_CAL_SAMPLES samples while stationary to derive:
- *       gyro_bias[3]      : mean raw gyro counts (subtract before integration)
- *       gravity_vec[3]    : mean raw accel counts (establishes world-up axis)
- *   - Detect mounting orientation from dominant gravity axis; build 3×3 remap
- *     matrix that maps sensor frame → world frame.
- *   - Run Madgwick AHRS throughout calibration so the filter converges before
- *     we start emitting mouse deltas.
- *   - Post-calibration: apply bias + remap, run LPF + Madgwick → Euler.
- *
- * Stage 2 — Mouse Delta
- *   - Rate-independent EMA smoothing on yaw + pitch.
- *   - Angular delta gated by per-axis deadzone.
- *   - Scale by per-axis sensitivity → float dx/dy.
- *   - Sub-pixel accumulation → int8 HID report values.
  */
 
 #include <math.h>
@@ -63,8 +45,10 @@ static float    s_remap[3][3];
 static float    s_accel_lpf[3];        /* filtered accel in raw counts      */
 static bool     s_accel_lpf_seeded;
 
-/* ---------- Madgwick quaternion [w, x, y, z] ---------- */
-static float    s_q[4];
+/* ---------- GRV quaternion [W, X, Y, Z] ----------
+ * Named s_qEstGRV / qEstGRV to match the Game Rotation Vector (GRV) section
+ * of the author's own fusion.c (SensorFusion/), for easy cross-reference. */
+static float    s_qEstGRV[4];
 
 /* ---------- Mouse delta state ---------- */
 static float    s_prev_yaw;
@@ -116,74 +100,6 @@ static float compute_dt(uint32_t ts_ticks) {
     return s_smoothed_dt;
 }
 
-/* ============================================================
- * Mounting detection + remap matrix
- *
- * Given a normalised gravity vector gnorm[], finds the dominant axis and
- * fills s_remap[3][3] with the appropriate permutation/sign matrix so that
- * the remapped accel points in the +Z direction in world frame.
- * ============================================================ */
-static void build_remap_matrix(const float gnorm[3]) {
-    /* Find dominant axis: 0=X, 1=Y, 2=Z */
-    int   dom = 0;
-    float best = fabsf(gnorm[0]);
-
-    for (int i = 1; i < 3; i++) {
-        float a = fabsf(gnorm[i]);
-        if (a > best) {
-            best = a;
-            dom = i;
-        }
-    }
-
-    /* Zero the matrix then fill the correct case */
-    memset(s_remap, 0, sizeof(s_remap));
-
-    if (dom == 2) {
-        if (gnorm[2] > 0.0f) {
-            /* Z-up: identity */
-            s_remap[0][0] = 1.0f;
-            s_remap[1][1] = 1.0f;
-            s_remap[2][2] = 1.0f;
-            LOG_INF("Mounting: Z-up (identity)");
-        } else {
-            /* Z-down: diag(1,-1,-1) */
-            s_remap[0][0] =  1.0f;
-            s_remap[1][1] = -1.0f;
-            s_remap[2][2] = -1.0f;
-            LOG_INF("Mounting: Z-down");
-        }
-    } else if (dom == 1) {
-        if (gnorm[1] > 0.0f) {
-            /* Y-up: [[1,0,0],[0,0,1],[0,-1,0]] */
-            s_remap[0][0] =  1.0f;
-            s_remap[1][2] =  1.0f;
-            s_remap[2][1] = -1.0f;
-            LOG_INF("Mounting: Y-up");
-        } else {
-            /* Y-down: [[1,0,0],[0,0,-1],[0,1,0]] */
-            s_remap[0][0] =  1.0f;
-            s_remap[1][2] = -1.0f;
-            s_remap[2][1] =  1.0f;
-            LOG_INF("Mounting: Y-down");
-        }
-    } else { /* dom == 0 */
-        if (gnorm[0] > 0.0f) {
-            /* X-up: [[0,0,-1],[0,1,0],[1,0,0]] */
-            s_remap[0][2] = -1.0f;
-            s_remap[1][1] =  1.0f;
-            s_remap[2][0] =  1.0f;
-            LOG_INF("Mounting: X-up");
-        } else {
-            /* X-down: [[0,0,1],[0,1,0],[-1,0,0]] */
-            s_remap[0][2] =  1.0f;
-            s_remap[1][1] =  1.0f;
-            s_remap[2][0] = -1.0f;
-            LOG_INF("Mounting: X-down");
-        }
-    }
-}
-
 /* Apply the remap matrix to a 3-vector (in-place). */
 static void apply_remap(float v[3]) {
     float out[3];
@@ -196,108 +112,120 @@ static void apply_remap(float v[3]) {
 }
 
 /* ============================================================
- * Madgwick AHRS update
- *
- * Ported verbatim from the Python MadgwickAHRS.update() method.
+ * initQuaternionGRV — reset the GRV quaternion to identity.
+ * Matches initQuaternionGRV() in the author's own fusion.c; used both at
+ * state reset and on numeric degeneracy in updateQuaternionGRV() below.
+ * ============================================================ */
+static void initQuaternionGRV(void) {
+    s_qEstGRV[0] = 1.0f; s_qEstGRV[1] = 0.0f; s_qEstGRV[2] = 0.0f; s_qEstGRV[3] = 0.0f;
+}
+
+/* ============================================================
+ * updateQuaternionGRV — Game Rotation Vector update (gradient-descent
+ * accel+gyro fusion, no magnetometer). Variable names follow the GRV
+ * section of the author's own fusion.c (SensorFusion/) for easy
+ * cross-reference against that implementation.
  *
  * Inputs:
  *   gx_dps, gy_dps, gz_dps — gyro in degrees per second
  *   ax_g,   ay_g,   az_g   — accel in g (already divided by IMU_ACCEL_SCALE)
- *   dt                     — integration step in seconds
+ *   dt                     — integration step in seconds (gameDT)
  *
- * Updates s_q[] in-place.  Quaternion convention: [w, x, y, z] = [q0..q3].
+ * Updates s_qEstGRV[] in-place.  Quaternion convention: [W, X, Y, Z].
  * ============================================================ */
-static void madgwick_update(float gx_dps, float gy_dps, float gz_dps,
-                            float ax_g,   float ay_g,   float az_g,
-                            float dt) {
-    float q0 = s_q[0], q1 = s_q[1], q2 = s_q[2], q3 = s_q[3];
+static void updateQuaternionGRV(float gx_dps, float gy_dps, float gz_dps,
+                                float ax_g,   float ay_g,   float az_g,
+                                float dt) {
+    float qEstGRV_W = s_qEstGRV[0], qEstGRV_X = s_qEstGRV[1],
+          qEstGRV_Y = s_qEstGRV[2], qEstGRV_Z = s_qEstGRV[3];
 
-    /* --- Normalise accelerometer --- */
-    float anorm = sqrtf(ax_g*ax_g + ay_g*ay_g + az_g*az_g);
-    if (anorm < 1e-10f) {
+    /* --- Normalise accelerometer (qAcc in the original) --- */
+    float qAcc_norm = sqrtf(ax_g*ax_g + ay_g*ay_g + az_g*az_g);
+    if (qAcc_norm < 1e-10f) {
         return; /* free-fall or bad data — skip this update */
     }
-    float ax = ax_g / anorm;
-    float ay = ay_g / anorm;
-    float az = az_g / anorm;
+    float qAcc_X = ax_g / qAcc_norm;
+    float qAcc_Y = ay_g / qAcc_norm;
+    float qAcc_Z = az_g / qAcc_norm;
 
-    /* --- Gradient descent objective function (f) --- */
-    float f0 = 2.0f*(q1*q3 - q0*q2) - ax;
-    float f1 = 2.0f*(q0*q1 + q2*q3) - ay;
-    float f2 = 1.0f - 2.0f*(q1*q1 + q2*q2) - az;
+    /* --- Gradient descent objective function (objFunctionG) --- */
+    float objFunctionG_X = 2.0f*(qEstGRV_X*qEstGRV_Z - qEstGRV_W*qEstGRV_Y) - qAcc_X;
+    float objFunctionG_Y = 2.0f*(qEstGRV_W*qEstGRV_X + qEstGRV_Y*qEstGRV_Z) - qAcc_Y;
+    float objFunctionG_Z = 1.0f - 2.0f*(qEstGRV_X*qEstGRV_X + qEstGRV_Y*qEstGRV_Y) - qAcc_Z;
 
-    /* --- Jacobian transpose times f (s = J^T · f) --- */
-    float s0 = -2.0f*q2*f0 + 2.0f*q1*f1;
-    float s1 =  2.0f*q3*f0 + 2.0f*q0*f1 - 4.0f*q1*f2;
-    float s2 = -2.0f*q0*f0 + 2.0f*q3*f1 - 4.0f*q2*f2;
-    float s3 =  2.0f*q1*f0 + 2.0f*q2*f1;
+    /* --- Jacobian transpose times objFunctionG (qDelF = Jg^T · objFunctionG) --- */
+    float qDelF_W = -2.0f*qEstGRV_Y*objFunctionG_X + 2.0f*qEstGRV_X*objFunctionG_Y;
+    float qDelF_X =  2.0f*qEstGRV_Z*objFunctionG_X + 2.0f*qEstGRV_W*objFunctionG_Y - 4.0f*qEstGRV_X*objFunctionG_Z;
+    float qDelF_Y = -2.0f*qEstGRV_W*objFunctionG_X + 2.0f*qEstGRV_Z*objFunctionG_Y - 4.0f*qEstGRV_Y*objFunctionG_Z;
+    float qDelF_Z =  2.0f*qEstGRV_X*objFunctionG_X + 2.0f*qEstGRV_Y*objFunctionG_Y;
 
-    /* --- Normalise step --- */
-    float snorm = sqrtf(s0*s0 + s1*s1 + s2*s2 + s3*s3);
-    if (snorm > 1e-10f) {
-        s0 /= snorm;
-        s1 /= snorm;
-        s2 /= snorm;
-        s3 /= snorm;
+    /* --- Normalise qDelF --- */
+    float qDelF_norm = sqrtf(qDelF_W*qDelF_W + qDelF_X*qDelF_X + qDelF_Y*qDelF_Y + qDelF_Z*qDelF_Z);
+    if (qDelF_norm > 1e-10f) {
+        qDelF_W /= qDelF_norm;
+        qDelF_X /= qDelF_norm;
+        qDelF_Y /= qDelF_norm;
+        qDelF_Z /= qDelF_norm;
     }
 
-    /* --- Gyro to radians per second --- */
-    float gr  = gx_dps * DEG2RAD;
-    float gpr = gy_dps * DEG2RAD;
-    float gzr = gz_dps * DEG2RAD;
+    /* --- Gyro to radians per second (qGyro in the original) --- */
+    float qGyro_X = gx_dps * DEG2RAD;
+    float qGyro_Y = gy_dps * DEG2RAD;
+    float qGyro_Z = gz_dps * DEG2RAD;
 
-    /* --- Quaternion rate of change --- */
-    float beta = IMU_MADGWICK_BETA;
-    float qd0 = 0.5f*(-q1*gr  - q2*gpr - q3*gzr) - beta*s0;
-    float qd1 = 0.5f*( q0*gr  + q2*gzr - q3*gpr) - beta*s1;
-    float qd2 = 0.5f*( q0*gpr - q1*gzr + q3*gr ) - beta*s2;
-    float qd3 = 0.5f*( q0*gzr + q1*gpr - q2*gr ) - beta*s3;
+    /* --- Quaternion rate of change (qGyroDerivative, with -betaGRV*qDelF
+     * folded in here rather than at the integration step as the original
+     * does — numerically identical, one less pair of temporaries). --- */
+    float betaGRV = IMU_MADGWICK_BETA;
+    float qGyroDerivative_W = 0.5f*(-qEstGRV_X*qGyro_X - qEstGRV_Y*qGyro_Y - qEstGRV_Z*qGyro_Z) - betaGRV*qDelF_W;
+    float qGyroDerivative_X = 0.5f*( qEstGRV_W*qGyro_X + qEstGRV_Y*qGyro_Z - qEstGRV_Z*qGyro_Y) - betaGRV*qDelF_X;
+    float qGyroDerivative_Y = 0.5f*( qEstGRV_W*qGyro_Y - qEstGRV_X*qGyro_Z + qEstGRV_Z*qGyro_X) - betaGRV*qDelF_Y;
+    float qGyroDerivative_Z = 0.5f*( qEstGRV_W*qGyro_Z + qEstGRV_X*qGyro_Y - qEstGRV_Y*qGyro_X) - betaGRV*qDelF_Z;
 
     /* --- Integrate --- */
-    q0 += qd0 * dt;
-    q1 += qd1 * dt;
-    q2 += qd2 * dt;
-    q3 += qd3 * dt;
+    qEstGRV_W += qGyroDerivative_W * dt;
+    qEstGRV_X += qGyroDerivative_X * dt;
+    qEstGRV_Y += qGyroDerivative_Y * dt;
+    qEstGRV_Z += qGyroDerivative_Z * dt;
 
     /* --- Normalise quaternion --- */
-    float qnorm = sqrtf(q0*q0 + q1*q1 + q2*q2 + q3*q3);
-    if (qnorm < 1e-10f) {
-        /* Degenerate — reset to identity */
-        s_q[0] = 1.0f; s_q[1] = 0.0f; s_q[2] = 0.0f; s_q[3] = 0.0f;
+    float qEstGRV_norm = sqrtf(qEstGRV_W*qEstGRV_W + qEstGRV_X*qEstGRV_X
+                              + qEstGRV_Y*qEstGRV_Y + qEstGRV_Z*qEstGRV_Z);
+    if (qEstGRV_norm < 1e-10f) {
+        initQuaternionGRV(); /* degenerate — reset to identity */
         return;
     }
-    q0 /= qnorm;
-    q1 /= qnorm;
-    q2 /= qnorm;
-    q3 /= qnorm;
-
-    s_q[0] = q0; s_q[1] = q1; s_q[2] = q2; s_q[3] = q3;
+    s_qEstGRV[0] = qEstGRV_W / qEstGRV_norm;
+    s_qEstGRV[1] = qEstGRV_X / qEstGRV_norm;
+    s_qEstGRV[2] = qEstGRV_Y / qEstGRV_norm;
+    s_qEstGRV[3] = qEstGRV_Z / qEstGRV_norm;
 }
 
 /* ============================================================
  * Euler angles from quaternion (degrees)
- *
- * Fills *roll, *pitch, *yaw from the current s_q[] state.
  * ============================================================ */
-static void quat_to_euler(float *roll, float *pitch, float *yaw) {
-    float q0 = s_q[0], q1 = s_q[1], q2 = s_q[2], q3 = s_q[3];
+static void convertQuaternionToEuler(float *roll, float *pitch, float *yaw) {
+    float qEstGRV_W = s_qEstGRV[0], qEstGRV_X = s_qEstGRV[1],
+          qEstGRV_Y = s_qEstGRV[2], qEstGRV_Z = s_qEstGRV[3];
 
-    *roll  = atan2f(2.0f*(q0*q1 + q2*q3), 1.0f - 2.0f*(q1*q1 + q2*q2)) * RAD2DEG;
+    *roll  = atan2f(2.0f*(qEstGRV_W*qEstGRV_X + qEstGRV_Y*qEstGRV_Z),
+                    1.0f - 2.0f*(qEstGRV_X*qEstGRV_X + qEstGRV_Y*qEstGRV_Y)) * RAD2DEG;
 
-    float sinp = 2.0f*(q0*q2 - q3*q1);
+    float sinp = 2.0f*(qEstGRV_W*qEstGRV_Y - qEstGRV_Z*qEstGRV_X);
     /* clamp to [-1, 1] before asin to avoid NaN at ±90° */
     if (sinp >  1.0f) sinp =  1.0f;
     if (sinp < -1.0f) sinp = -1.0f;
     *pitch = asinf(sinp) * RAD2DEG;
 
-    *yaw   = atan2f(2.0f*(q0*q3 + q1*q2), 1.0f - 2.0f*(q2*q2 + q3*q3)) * RAD2DEG;
+    *yaw   = atan2f(2.0f*(qEstGRV_W*qEstGRV_Z + qEstGRV_X*qEstGRV_Y),
+                    1.0f - 2.0f*(qEstGRV_Y*qEstGRV_Y + qEstGRV_Z*qEstGRV_Z)) * RAD2DEG;
 }
 
 /* ============================================================
  * Calibration phase
  *
  * Called for each of the first IMU_CAL_SAMPLES samples.  Accumulates gyro and
- * accel sums, runs the Madgwick filter (so it converges during the idle
+ * accel sums, runs updateQuaternionGRV() (so it converges during the idle
  * calibration window), and on the last sample:
  *   1. Computes gyro bias and gravity vector from the means.
  *   2. Detects mounting and builds the remap matrix.
@@ -328,14 +256,14 @@ static void calibration_update(float ax_raw, float ay_raw, float az_raw,
             printk("[cal] settling %d/%d\n", s_cal_skip, IMU_CAL_SKIP_SAMPLES);
         }
 #endif
-        /* Run Madgwick during skip so it converges before collection ends */
+        /* Run updateQuaternionGRV during skip so it converges before collection ends */
         float gx_dps = gx_raw / IMU_GYRO_SCALE;
         float gy_dps = gy_raw / IMU_GYRO_SCALE;
         float gz_dps = gz_raw / IMU_GYRO_SCALE;
-        madgwick_update(gx_dps, gy_dps, gz_dps,
-                        s_accel_lpf[0] / IMU_ACCEL_SCALE,
-                        s_accel_lpf[1] / IMU_ACCEL_SCALE,
-                        s_accel_lpf[2] / IMU_ACCEL_SCALE, dt);
+        updateQuaternionGRV(gx_dps, gy_dps, gz_dps,
+                            s_accel_lpf[0] / IMU_ACCEL_SCALE,
+                            s_accel_lpf[1] / IMU_ACCEL_SCALE,
+                            s_accel_lpf[2] / IMU_ACCEL_SCALE, dt);
         return;
     }
 
@@ -347,14 +275,14 @@ static void calibration_update(float ax_raw, float ay_raw, float az_raw,
     s_accel_sum[1] += (double)ay_raw;
     s_accel_sum[2] += (double)az_raw;
 
-    /* --- Run Madgwick with filtered accel so it converges --- */
+    /* --- Run updateQuaternionGRV with filtered accel so it converges --- */
     float gx_dps = gx_raw / IMU_GYRO_SCALE;
     float gy_dps = gy_raw / IMU_GYRO_SCALE;
     float gz_dps = gz_raw / IMU_GYRO_SCALE;
     float ax_g   = s_accel_lpf[0] / IMU_ACCEL_SCALE;
     float ay_g   = s_accel_lpf[1] / IMU_ACCEL_SCALE;
     float az_g   = s_accel_lpf[2] / IMU_ACCEL_SCALE;
-    madgwick_update(gx_dps, gy_dps, gz_dps, ax_g, ay_g, az_g, dt);
+    updateQuaternionGRV(gx_dps, gy_dps, gz_dps, ax_g, ay_g, az_g, dt);
 
     s_cal_count++;
 
@@ -406,7 +334,7 @@ static void calibration_update(float ax_raw, float ay_raw, float az_raw,
     s_remap[2][2] = 1.0f;
     LOG_INF("Mounting: Z-up (hardcoded)");
 #else
-    build_remap_matrix(s_gravity);
+#error "Define IMU_MOUNT_Y_DOWN or IMU_MOUNT_Z_UP in app_config.h"
 #endif
 
     s_calibrated = true;
@@ -420,7 +348,7 @@ static void calibration_update(float ax_raw, float ay_raw, float az_raw,
  * Post-calibration sensor fusion
  *
  * Applies gyro bias correction and axis remap, runs the accel LPF and
- * Madgwick update, then converts the quaternion to Euler angles.
+ * updateQuaternionGRV, then converts the quaternion to Euler angles.
  * ============================================================ */
 static void fusion_update(float ax_raw, float ay_raw, float az_raw,
                           float gx_raw, float gy_raw, float gz_raw,
@@ -459,18 +387,18 @@ static void fusion_update(float ax_raw, float ay_raw, float az_raw,
     apply_remap(g_vec);
     apply_remap(r_vec);
 
-    /* --- Madgwick update (gyro in dps, accel in g) --- */
+    /* --- updateQuaternionGRV (gyro in dps, accel in g) --- */
     float gx_dps = r_vec[0] / IMU_GYRO_SCALE;
     float gy_dps = r_vec[1] / IMU_GYRO_SCALE;
     float gz_dps = r_vec[2] / IMU_GYRO_SCALE;
     float ax_g   = g_vec[0] / IMU_ACCEL_SCALE;
     float ay_g   = g_vec[1] / IMU_ACCEL_SCALE;
     float az_g   = g_vec[2] / IMU_ACCEL_SCALE;
-    madgwick_update(gx_dps, gy_dps, gz_dps, ax_g, ay_g, az_g, dt);
+    updateQuaternionGRV(gx_dps, gy_dps, gz_dps, ax_g, ay_g, az_g, dt);
 
     /* Extract Euler angles: yaw → cursor X, pitch → cursor Y, roll discarded. */
     float roll_unused;
-    quat_to_euler(&roll_unused, pitch_out, yaw_out);
+    convertQuaternionToEuler(&roll_unused, pitch_out, yaw_out);
     (void)roll_unused;
 }
 
@@ -584,10 +512,10 @@ static void on_imu_sample(const struct imu_sample *s) {
             }
         } else {
             float roll, pitch, yaw;
-            quat_to_euler(&roll, &pitch, &yaw);
+            convertQuaternionToEuler(&roll, &pitch, &yaw);
             printk("[imu] q=[%d,%d,%d,%d]/1k yaw=%d pitch=%d roll=%d dx=%d dy=%d\n",
-                   (int)(s_q[0] * 1000), (int)(s_q[1] * 1000),
-                   (int)(s_q[2] * 1000), (int)(s_q[3] * 1000),
+                   (int)(s_qEstGRV[0] * 1000), (int)(s_qEstGRV[1] * 1000),
+                   (int)(s_qEstGRV[2] * 1000), (int)(s_qEstGRV[3] * 1000),
                    (int)(yaw * 10), (int)(pitch * 10), (int)(roll * 10),
                    (int)dx, (int)dy);
         }
@@ -619,7 +547,7 @@ static void reset_state(void) {
     s_remap[1][1] = 1.0f;
     s_remap[2][2] = 1.0f;
 
-    s_q[0] = 1.0f; s_q[1] = 0.0f; s_q[2] = 0.0f; s_q[3] = 0.0f;
+    initQuaternionGRV();
 
     s_prev_yaw     = 0.0f;
     s_prev_pitch   = 0.0f;

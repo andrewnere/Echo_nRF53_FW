@@ -4,9 +4,6 @@
  * Architecture:
  *   IMU callback → ring buffer (never touches BLE)
  *   k_work_delayable drains ring → bt_gatt_notify
- *
- * Drain fires immediately once BLE_RAW_BATCH_SIZE samples are available.
- * Consecutive drains are paced at 10 ms; -ENOMEM backs off 50 ms.
  */
 
 #include <stdbool.h>

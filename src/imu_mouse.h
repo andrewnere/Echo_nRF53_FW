@@ -3,7 +3,10 @@
  *
  * Two-stage pipeline:
  *   Stage 1 — Sensor fusion: gyro bias calibration + mounting detection +
- *             Madgwick AHRS → Euler angles (yaw, pitch).
+ *             updateQuaternionGRV (Game Rotation Vector: gradient-descent
+ *             accel+gyro fusion) → Euler angles (yaw, pitch). Internal
+ *             variable names in imu_mouse.c follow the GRV section of the
+ *             author's own fusion.c (SensorFusion/) for cross-reference.
  *   Stage 2 — Mouse delta: rate-independent EMA smoothing → angular delta
  *             → deadzone gate → sensitivity → int8 HID output with sub-pixel
  *             accumulation.
@@ -33,7 +36,7 @@ void imu_mouse_init(mouse_output_cb_t output_cb);
 /*
  * Enable or disable the mouse pipeline at runtime.
  *
- * Disabling stops Madgwick processing and suppresses HID reports immediately.
+ * Disabling stops GRV processing and suppresses HID reports immediately.
  * Re-enabling triggers a fresh calibration cycle (settle + collect), so the
  * cursor is ready once calibration completes (~6 s at default settings).
  */

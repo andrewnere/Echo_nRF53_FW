@@ -1,9 +1,5 @@
 /*
  * ble_hid.c — BLE HID mouse profile (identity 0, "Virtual Mouse")
- *
- * Self-contained: owns its advertising set, GATT HIDS service, and
- * connection lifecycle (own BT_CONN_CB_DEFINE, filtered to identity 0 /
- * peripheral role so it never reacts to the raw-IMU or central links).
  */
 
 #include <stdbool.h>

@@ -43,10 +43,10 @@
 
 /* ============================================================
  * Board mounting orientation.
- * Define one to hardcode the sensor→world remap and skip auto-detection.
- * Leave all commented out to use calibration-derived auto-detection.
+ * Define exactly one to hardcode the sensor→world remap — required, there
+ * is no runtime auto-detection.
  *
- *   IMU_MOUNT_Z_UP    — board flat, sensor chip face-up (auto-detect default)
+ *   IMU_MOUNT_Z_UP    — board flat, sensor chip face-up
  *   IMU_MOUNT_Y_DOWN  — board rotated 90° around X-axis, Y-axis pointing down
  * ============================================================ */
 //#define IMU_MOUNT_Z_UP
