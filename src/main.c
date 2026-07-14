@@ -1,23 +1,13 @@
 /*
  * main.c — BLE HID mouse + optional raw IMU data streaming
+ * 
+ * review app_config.h for tunable parameters and compile-time feature guards.
  *
- * Runtime modes (DEFAULT_OUTPUT_MODE in app_config.h, or "MODE:N" on UART):
- *   0 — UART  : IMU → CSV on UART. No BLE activity.
- *   1 — HID   : BLE HID mouse only.          Requires ENABLE_BLE_HID.
- *   2 — Raw   : BLE raw IMU stream only.      Requires ENABLE_BLE_RAW_DATA.
- *   3 — Both  : HID mouse + raw IMU stream.   Requires both.
- *
- * Compile-time guards (app_config.h):
- *   #define ENABLE_BLE_HID       — HID mouse profile (identity 0, "Virtual Mouse")
- *   #define ENABLE_BLE_RAW_DATA  — raw IMU GATT notify service (identity 1, "VM-Raw")
- *   If neither is defined the BLE stack is not initialised at all.
- */
+*/
 
-#include "app_config.h"   /* defines ENABLE_BLE_HID / ENABLE_BLE_RAW_DATA first */
-
+#include "app_config.h" 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
-#include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
@@ -32,25 +22,6 @@
 #include "imu_mouse.h"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
-
-/* ============================================================
- * LED — 3-second blink sanity check
- * Disabled under ENABLE_NRF53_AS_CENTRAL: led0 is repurposed as LED1,
- * driven by incoming ESP32 commands instead (see ble_central.c).
- * ============================================================ */
-
-#ifndef ENABLE_NRF53_AS_CENTRAL
-
-#define LED_NODE DT_ALIAS(led0)
-static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED_NODE, gpios);
-
-static void led_toggle_cb(struct k_timer *timer) {
-    ARG_UNUSED(timer);
-    gpio_pin_toggle_dt(&led);
-}
-K_TIMER_DEFINE(led_timer, led_toggle_cb, NULL);
-
-#endif /* !ENABLE_NRF53_AS_CENTRAL */
 
 /* ============================================================
  * Mode tracking
@@ -396,15 +367,6 @@ static void setup_advertising(void)
 
 int main(void)
 {
-#ifndef ENABLE_NRF53_AS_CENTRAL
-    int ret;
-
-    if (!gpio_is_ready_dt(&led)) { return -1; }
-    ret = gpio_pin_configure_dt(&led, GPIO_OUTPUT_ACTIVE);
-    if (ret < 0) { return ret; }
-    k_timer_start(&led_timer, K_SECONDS(3), K_SECONDS(3));
-#endif
-
     imu_set_mode_change_cb(apply_output_mode);
 
 #if defined(ENABLE_BLE_HID) || defined(ENABLE_BLE_RAW_DATA) || defined(ENABLE_NRF53_AS_CENTRAL)

@@ -83,11 +83,6 @@ static mouse_output_cb_t s_output_cb;
 /* ---------- Runtime enable flag ---------- */
 static bool s_mouse_enabled;
 
-/* ---------- BLE send rate-limiter ---------- */
-static int8_t  s_pending_dx;   /* accumulated dx awaiting next send window  */
-static int8_t  s_pending_dy;
-static uint8_t s_send_phase;   /* increments each sample, sends at MOUSE_SEND_EVERY_N */
-
 /* ---------- dt smoothing ---------- */
 static uint32_t s_prev_ts;
 static bool     s_ts_seeded;
@@ -600,19 +595,7 @@ static void on_imu_sample(const struct imu_sample *s) {
 #endif
 
     if (moved && s_output_cb) {
-        /* Accumulate unsent motion — clamp so we don't wrap int8 */
-        int acc_x = (int)s_pending_dx + (int)dx;
-        int acc_y = (int)s_pending_dy + (int)dy;
-        s_pending_dx = (int8_t)(acc_x >  127 ?  127 : (acc_x < -127 ? -127 : acc_x));
-        s_pending_dy = (int8_t)(acc_y >  127 ?  127 : (acc_y < -127 ? -127 : acc_y));
-
-        /* Only push to BLE every MOUSE_SEND_EVERY_N samples (~69 Hz) */
-        if (++s_send_phase >= MOUSE_SEND_EVERY_N) {
-            s_send_phase = 0;
-            s_output_cb(s_pending_dx, s_pending_dy);
-            s_pending_dx = 0;
-            s_pending_dy = 0;
-        }
+        s_output_cb(dx, dy);
     }
 }
 
@@ -645,10 +628,6 @@ static void reset_state(void) {
     s_accum_x      = 0.0f;
     s_accum_y      = 0.0f;
     s_smoothed_dt  = IMU_NOMINAL_DT;
-
-    s_pending_dx   = 0;
-    s_pending_dy   = 0;
-    s_send_phase   = 0;
 }
 
 void imu_mouse_init(mouse_output_cb_t output_cb) {

@@ -1,22 +1,9 @@
 /*
  * app_config.h — Project-wide tunable parameters
- *
- * Single place to change IMU sample rate, calibration timing, Madgwick
- * filter aggressiveness, mouse feel (sensitivity / deadzone / smoothing),
- * and BLE report rate.  No other source files need touching.
- *
- * Rate index ↔ Hz mapping (k_rates[] in imu.c):
- *   IMU_RATE_IDX  0 →  12.5 Hz
- *   IMU_RATE_IDX  1 →  26   Hz
- *   IMU_RATE_IDX  2 →  52   Hz
- *   IMU_RATE_IDX  3 → 104   Hz
- *   IMU_RATE_IDX  4 → 208   Hz
  */
 
 #ifndef APP_CONFIG_H
 #define APP_CONFIG_H
-
-
 
 /* ============================================================
  * Compile-time feature guards.
@@ -25,8 +12,8 @@
  *
  *   ENABLE_BLE_HID       — HID mouse profile (identity 0, "Virtual Mouse")
  *                          macOS and Windows pair with this as a standard mouse.
- *   ENABLE_BLE_RAW_DATA  — Raw IMU GATT notify service (identity 1, "VM-Raw")
- *                          Python / bleak script on Mac or Windows connects here.
+ *   ENABLE_BLE_RAW_DATA  — Raw IMU GATT notify service (identity 1, "VM-Raw").
+ * 
  *   ENABLE_NRF53_AS_CENTRAL — nRF53 also acts as a BLE Central, connecting out
  *                          to an ESP32 peripheral and mapping its 4 ASCII
  *                          commands ("cmd1".."cmd4") to LED1-LED4. Disables
@@ -98,8 +85,8 @@
  * Phase 1 (settle): discard samples while sensor output stabilises.
  * Phase 2 (collect): accumulate samples to compute gyro bias + gravity.
  * ============================================================ */
-#define IMU_CAL_SETTLE_S     3
-#define IMU_CAL_COLLECT_S    3
+#define IMU_CAL_SETTLE_S     3 //3 second settling
+#define IMU_CAL_COLLECT_S    3 //3 seconds profiling noise/drift
 #define IMU_CAL_SKIP_SAMPLES (IMU_ODR_HZ * IMU_CAL_SETTLE_S)
 #define IMU_CAL_SAMPLES      (IMU_ODR_HZ * IMU_CAL_COLLECT_S)
 
@@ -126,19 +113,6 @@
 #define MOUSE_DEADZONE_X     0.1f    /* degrees — motion below this is ignored */
 #define MOUSE_DEADZONE_Y     0.1f    /* degrees */
 #define MOUSE_SMOOTH_TAU     0.06f   /* EMA time constant for output smoothing (seconds) */
-
-/* ============================================================
- * BLE report rate limiter
- * Send one HID report every MOUSE_SEND_EVERY_N IMU samples.
- * Effective BLE rate = IMU_ODR_HZ / MOUSE_SEND_EVERY_N.
- *
- *   1 → full rate (IMU_ODR_HZ)
- *   2 → half rate (IMU_ODR_HZ / 2)
- *   N → IMU_ODR_HZ / N
- *
- * Motion between sends is accumulated, so no data is lost.
- * ============================================================ */
-#define MOUSE_SEND_EVERY_N   1
 
 /* Batch N IMU samples into one BLE notification.
  * Payload = N × 16 bytes; requires ATT MTU > (N×16 + 3).
