@@ -27,8 +27,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
-#include "imu.h"
 #include "app_config.h"
+#include "imu.h"
 
 LOG_MODULE_REGISTER(imu, LOG_LEVEL_INF);
 
@@ -94,8 +94,8 @@ static const struct device* i2c_bus;
  *   GYRO_FS_125DPS  0x02   FS_125=1 → ±125  dps,  4.375 mdps/LSB  (0.004375 dps/LSB)
  *   GYRO_FS_500DPS  0x04   FS_G=01  → ±500  dps,  17.5  mdps/LSB  (0.0175   dps/LSB)
  */
-#define GYRO_FS_500DPS 0x04 
-#define GYRO_FS_ACTIVE GYRO_FS_500DPS
+#define GYRO_FS_500DPS              0x04
+#define GYRO_FS_ACTIVE              GYRO_FS_500DPS
 #define FIFO_CFG_CONTINUOUS_WITH_TS 0x46
 
 /* WHO_AM_I value expected from LSM6DSO */
@@ -125,13 +125,15 @@ static const struct rate_cfg k_rates[] = {
     {ODR_208HZ, ODR_208HZ, 4808, "208"},     /* RATE:5 */
 };
 
-/* Shared between imu_thread and cmd_thread; written only from cmd_thread */
-static volatile int  m_rate_idx       = IMU_RATE_IDX;
 static volatile bool s_uart_raw_enabled = false;
-static void        (*s_mode_cb)(int mode) = NULL;
+static void (*s_mode_cb)(int mode) = NULL;
 
-void imu_set_uart_raw(bool enabled)          { s_uart_raw_enabled = enabled; }
-void imu_set_mode_change_cb(void (*cb)(int)) { s_mode_cb = cb; }
+void imu_set_uart_raw(bool enabled) {
+    s_uart_raw_enabled = enabled;
+}
+void imu_set_mode_change_cb(void (*cb)(int)) {
+    s_mode_cb = cb;
+}
 
 /*
  * Free-running software timestamp counter (units: 25 µs ticks).
@@ -199,9 +201,6 @@ static int lsm6dso_check_id(void) {
     return 0;
 }
 
-/*
- * Apply the rate at index `idx` from k_rates[].
- */
 static int lsm6dso_set_rate(int idx) {
     const struct rate_cfg* r = &k_rates[idx];
     int                    ret;
@@ -235,9 +234,7 @@ static int lsm6dso_set_rate(int idx) {
     s_period_ticks = r->period_us / 25U;
     s_ts_seeded = false;
 
-#ifdef ENABLE_UART_DEBUGGING
-    printk("STATUS:LSM6DSO,%s\n", r->label);
-#endif
+    DBG_PRINTK("STATUS:LSM6DSO,%s\n", r->label);
     return 0;
 }
 
@@ -265,7 +262,6 @@ static int lsm6dso_init(void) {
     if (ret)
         return ret;
 
-
     ret = reg_write(REG_FIFO_CTRL1, 30); /* WTM[7:0] */
     if (ret)
         return ret;
@@ -274,16 +270,14 @@ static int lsm6dso_init(void) {
         return ret;
 
     /* Apply the configured rate (IMU_RATE_IDX), which also enables the FIFO */
-    ret = lsm6dso_set_rate(m_rate_idx);
+    ret = lsm6dso_set_rate(IMU_RATE_IDX);
     if (ret)
         return ret;
 
-#ifdef ENABLE_UART_DEBUGGING
-    printk("# timestamp,ax,ay,az,gx,gy,gz\n");
-    printk("# timestamp: 25 µs/tick  → ts_us=tick*25, ts_ms=tick*0.025\n");
-    printk("# ax/ay/az:  raw int16,  scale 0.061 mg/LSB      (±2 g)\n");
-    printk("# gx/gy/gz:  raw int16,  scale 0.0175 dps/LSB (±500 dps)\n");
-#endif
+    DBG_PRINTK("# timestamp,ax,ay,az,gx,gy,gz\n");
+    DBG_PRINTK("# timestamp: 25 µs/tick  → ts_us=tick*25, ts_ms=tick*0.025\n");
+    DBG_PRINTK("# ax/ay/az:  raw int16,  scale 0.061 mg/LSB      (±2 g)\n");
+    DBG_PRINTK("# gx/gy/gz:  raw int16,  scale 0.0175 dps/LSB (±500 dps)\n");
     return 0;
 }
 
@@ -385,12 +379,10 @@ static void fifo_drain(void) {
 
     uint16_t count = (uint16_t)status[0] | (((uint16_t)(status[1] & 0x01)) << 8);
 
-#ifdef ENABLE_UART_DEBUGGING
     if (status[1] & 0x40) {
         /* FIFO has wrapped — data was lost.  Rare at 10 ms poll + 208 Hz. */
-        printk("WARN:FIFO_OVERRUN\n");
+        DBG_PRINTK("WARN:FIFO_OVERRUN\n");
     }
-#endif
 
     if (count == 0) {
         return;
@@ -521,7 +513,6 @@ static void cmd_thread_fn(void* a, void* b, void* c) {
                 int level = buf[5] - '1'; /* '1'→0, '5'→4 */
 
                 if (level >= 0 && level < (int)ARRAY_SIZE(k_rates)) {
-                    m_rate_idx = level;
                     lsm6dso_set_rate(level);
                 } else {
                     printk("ERROR:bad rate, use RATE:1 to RATE:5\n");

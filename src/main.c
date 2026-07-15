@@ -1,5 +1,5 @@
 /* app_config.h contains all key compile time configuration parameters*/
-#include "app_config.h" 
+#include "app_config.h"
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/kernel.h>
@@ -20,61 +20,62 @@ LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
  * connection events to every registered callback struct.
  * ============================================================ */
 
-static void connected(struct bt_conn *conn, uint8_t err)
-{
-    if (err) { return; }
+static void connected(struct bt_conn* conn, uint8_t err) {
+    if (err) {
+        return;
+    }
     struct bt_conn_info info;
     bt_conn_get_info(conn, &info);
-    printk("CONNECTED: id=%u role=%u interval=%u (%.2f ms)\n",
-           info.id, info.role, info.le.interval, (float)info.le.interval * 1.25f);
+    DBG_PRINTK("CONNECTED: id=%u role=%u interval=%u (%.2f ms)\n",
+               info.id, info.role, info.le.interval, (float)info.le.interval * 1.25f);
 }
 
-static void disconnected(struct bt_conn *conn, uint8_t reason)
-{
+static void disconnected(struct bt_conn* conn, uint8_t reason) {
     struct bt_conn_info info;
     bt_conn_get_info(conn, &info);
-    printk("DISCONNECTED: id=%u role=%u reason=%u\n", info.id, info.role, reason);
+    DBG_PRINTK("DISCONNECTED: id=%u role=%u reason=%u\n", info.id, info.role, reason);
 }
 
-static void security_changed(struct bt_conn *conn, bt_security_t level,
-                              enum bt_security_err err)
-{
-    if (err) { printk("SECURITY_FAILED: err=%d\n", err); return; }
-    printk("SECURITY_OK: level=%d\n", level);
+static void security_changed(struct bt_conn* conn, bt_security_t level,
+                             enum bt_security_err err) {
+    if (err) {
+        DBG_PRINTK("SECURITY_FAILED: err=%d\n", err);
+        return;
+    }
+    DBG_PRINTK("SECURITY_OK: level=%d\n", level);
 }
 
-static void le_param_updated(struct bt_conn *conn, uint16_t interval,
-                              uint16_t latency, uint16_t timeout)
-{
+static void le_param_updated(struct bt_conn* conn, uint16_t interval,
+                             uint16_t latency, uint16_t timeout) {
     struct bt_conn_info info;
     bt_conn_get_info(conn, &info);
-    printk("CONN_PARAMS:id=%u interval=%u (%.2f ms) latency=%u timeout=%u\n",
-           info.id, interval, (float)interval * 1.25f, latency, timeout);
+    DBG_PRINTK("CONN_PARAMS:id=%u interval=%u (%.2f ms) latency=%u timeout=%u\n",
+               info.id, interval, (float)interval * 1.25f, latency, timeout);
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
-    .connected        = connected,
-    .disconnected     = disconnected,
+    .connected = connected,
+    .disconnected = disconnected,
     .security_changed = security_changed,
     .le_param_updated = le_param_updated,
 };
 
-static void auth_cancel(struct bt_conn *conn) { ARG_UNUSED(conn); }
-static struct bt_conn_auth_cb auth_cb = { .cancel = auth_cancel };
+static void auth_cancel(struct bt_conn* conn) {
+    ARG_UNUSED(conn);
+}
+static struct bt_conn_auth_cb auth_cb = {.cancel = auth_cancel};
 
-static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
-{
+static void pairing_failed(struct bt_conn* conn, enum bt_security_err reason) {
     ARG_UNUSED(reason);
     bt_conn_disconnect(conn, BT_HCI_ERR_AUTH_FAIL);
 }
-static struct bt_conn_auth_info_cb auth_info_cb = { .pairing_failed = pairing_failed };
+static struct bt_conn_auth_info_cb auth_info_cb = {.pairing_failed = pairing_failed};
 
 /* ============================================================
  * Output mode control
  * ============================================================ */
 
-static void apply_output_mode(int mode)
-{
+static void apply_output_mode(int mode) {
     imu_set_uart_raw(mode == 0);
 
 #ifdef ENABLE_BLE_HID
@@ -89,8 +90,7 @@ static void apply_output_mode(int mode)
  * Entry point
  * ============================================================ */
 
-int main(void)
-{
+int main(void) {
     imu_set_mode_change_cb(apply_output_mode);
 
 #if defined(ENABLE_BLE_HID) || defined(ENABLE_BLE_RAW_DATA) || defined(ENABLE_NRF53_AS_CENTRAL)
@@ -110,7 +110,7 @@ int main(void)
 #endif
 
     apply_output_mode(DEFAULT_OUTPUT_MODE);
-#else  /* no BLE features compiled in — UART-only build */
+#else /* no BLE features compiled in — UART-only build */
     apply_output_mode(DEFAULT_OUTPUT_MODE);
 #endif
 

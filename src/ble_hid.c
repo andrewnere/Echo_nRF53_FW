@@ -26,7 +26,7 @@ LOG_MODULE_REGISTER(ble_hid, LOG_LEVEL_INF);
 
 BT_HIDS_DEF(hids_obj, MOUSE_REP_SIZE);
 
-static struct bt_conn *current_conn;
+static struct bt_conn* current_conn;
 static bool            s_active;
 
 /*
@@ -73,37 +73,42 @@ static const struct bt_data sd_hid[] = {
             sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
 
-static struct bt_le_ext_adv *s_adv_hid;
+static struct bt_le_ext_adv* s_adv_hid;
 
-static void start_hid_adv(void)
-{
+static void start_hid_adv(void) {
     int err = bt_le_ext_adv_start(s_adv_hid, BT_LE_EXT_ADV_START_DEFAULT);
-    if (err == 0)              { printk("HID_ADV: started\n"); }
-    else if (err != -EALREADY) { printk("HID_ADV: failed %d\n", err); }
+    if (err == 0) {
+        DBG_PRINTK("HID_ADV: started\n");
+    } else if (err != -EALREADY) {
+        DBG_PRINTK("HID_ADV: failed %d\n", err);
+    }
 }
 
-static void hid_adv_work_fn(struct k_work *work) { ARG_UNUSED(work); start_hid_adv(); }
+static void hid_adv_work_fn(struct k_work* work) {
+    ARG_UNUSED(work);
+    start_hid_adv();
+}
 K_WORK_DEFINE(s_hid_adv_work, hid_adv_work_fn);
 
 static const struct bt_le_conn_param k_hid_conn_params = {
-    .interval_min = 6,    /* 7.5 ms */
-    .interval_max = 9,    /* 11.25 ms */
-    .latency      = 0,
-    .timeout      = 400,  /* 4 s */
+    .interval_min = 6, /* 7.5 ms */
+    .interval_max = 9, /* 11.25 ms */
+    .latency = 0,
+    .timeout = 400, /* 4 s */
 };
 
-static void send_mouse(int8_t x, int8_t y)
-{
-    if (!current_conn) { return; }
+static void send_mouse(int8_t x, int8_t y) {
+    if (!current_conn) {
+        return;
+    }
     uint8_t rep[MOUSE_REP_SIZE] = {0, (uint8_t)x, (uint8_t)y};
     bt_hids_inp_rep_send(&hids_obj, current_conn, MOUSE_REP_IDX,
                          rep, sizeof(rep), NULL);
 }
 
-static void hids_init(void)
-{
+static void hids_init(void) {
     struct bt_hids_init_param hids_init = {0};
-    struct bt_hids_inp_rep   *inp_rep;
+    struct bt_hids_inp_rep*   inp_rep;
 
     hids_init.rep_map.data = report_map;
     hids_init.rep_map.size = sizeof(report_map);
@@ -113,7 +118,7 @@ static void hids_init(void)
 
     inp_rep = &hids_init.inp_rep_group_init.reports[0];
     inp_rep->size = MOUSE_REP_SIZE;
-    inp_rep->id   = 0;
+    inp_rep->id = 0;
     hids_init.inp_rep_group_init.cnt = 1;
     hids_init.is_mouse = true;
 
@@ -125,9 +130,10 @@ static void hids_init(void)
  * role); the raw-IMU / central links are handled by their own modules.
  * ============================================================ */
 
-static void hid_connected(struct bt_conn *conn, uint8_t err)
-{
-    if (err) { return; }
+static void hid_connected(struct bt_conn* conn, uint8_t err) {
+    if (err) {
+        return;
+    }
 
     struct bt_conn_info info;
     bt_conn_get_info(conn, &info);
@@ -141,8 +147,7 @@ static void hid_connected(struct bt_conn *conn, uint8_t err)
     bt_conn_le_param_update(conn, &k_hid_conn_params);
 }
 
-static void hid_disconnected(struct bt_conn *conn, uint8_t reason)
-{
+static void hid_disconnected(struct bt_conn* conn, uint8_t reason) {
     ARG_UNUSED(reason);
 
     struct bt_conn_info info;
@@ -161,7 +166,7 @@ static void hid_disconnected(struct bt_conn *conn, uint8_t reason)
 }
 
 BT_CONN_CB_DEFINE(hid_conn_callbacks) = {
-    .connected    = hid_connected,
+    .connected = hid_connected,
     .disconnected = hid_disconnected,
 };
 
@@ -169,37 +174,45 @@ BT_CONN_CB_DEFINE(hid_conn_callbacks) = {
  * Public API
  * ============================================================ */
 
-void ble_hid_init(void)
-{
+void ble_hid_init(void) {
     struct bt_le_adv_param p = {
-        .id                 = BT_ID_DEFAULT,
-        .sid                = 0,
+        .id = BT_ID_DEFAULT,
+        .sid = 0,
         .secondary_max_skip = 0,
-        .options            = BT_LE_ADV_OPT_CONNECTABLE,
-        .interval_min       = BT_GAP_ADV_FAST_INT_MIN_2,
-        .interval_max       = BT_GAP_ADV_FAST_INT_MAX_2,
-        .peer               = NULL,
+        .options = BT_LE_ADV_OPT_CONNECTABLE,
+        .interval_min = BT_GAP_ADV_FAST_INT_MIN_2,
+        .interval_max = BT_GAP_ADV_FAST_INT_MAX_2,
+        .peer = NULL,
     };
     int err = bt_le_ext_adv_create(&p, NULL, &s_adv_hid);
-    if (err) { printk("HID_ADV_CREATE_ERR: %d\n", err); return; }
+    if (err) {
+        DBG_PRINTK("HID_ADV_CREATE_ERR: %d\n", err);
+        return;
+    }
     bt_le_ext_adv_set_data(s_adv_hid, ad_hid, ARRAY_SIZE(ad_hid), sd_hid, ARRAY_SIZE(sd_hid));
 
     hids_init();
     imu_mouse_init(send_mouse);
 }
 
-void ble_hid_set_active(bool active)
-{
+void ble_hid_set_active(bool active) {
     s_active = active;
     imu_mouse_set_enabled(active);
 
-    if (s_adv_hid) { bt_le_ext_adv_stop(s_adv_hid); }
-    if (s_adv_hid && active) { start_hid_adv(); }
+    if (s_adv_hid) {
+        bt_le_ext_adv_stop(s_adv_hid);
+    }
+    if (s_adv_hid && active) {
+        start_hid_adv();
+    }
 }
 
 #else /* ENABLE_BLE_HID not defined — provide no-op stubs */
 
-void ble_hid_init(void)             {}
-void ble_hid_set_active(bool a)     { (void)a; }
+void ble_hid_init(void) {
+}
+void ble_hid_set_active(bool a) {
+    (void)a;
+}
 
 #endif /* ENABLE_BLE_HID */
