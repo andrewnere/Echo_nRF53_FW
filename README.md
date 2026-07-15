@@ -1,8 +1,9 @@
 # nRF Virtual Mouse
 
 BLE HID mouse driven by an LSM6DSO IMU on the nRF5340-DK.  
-Sensor fusion (Madgwick AHRS) converts head/hand tilt into cursor movement.  
-Optionally streams raw IMU data over a second BLE connection for logging/analysis.
+Sensor fusion (Madgwick/Game-Rotation-Vector style AHRS) converts head/hand tilt into cursor movement.  
+Optionally streams raw IMU data over a second BLE connection for logging/analysis.  
+Optionally also acts as a BLE **Central**, connecting out to an ESP32 peripheral and mapping incoming commands to onboard LEDs.
 
 ---
 
@@ -41,6 +42,8 @@ Four runtime modes control what the device does. Set the default at compile time
 | `2` | Raw | BLE raw IMU stream only. Connect with the Python client. |
 | `3` | Both | HID mouse + raw IMU stream simultaneously. |
 
+The BLE Central link to an ESP32 (see below) is independent of these modes — when enabled it scans/connects continuously regardless of the current mode.
+
 ---
 
 ## UART Commands
@@ -74,11 +77,18 @@ All tunable parameters live in one place.
 
 ### Feature guards
 ```c
-#define ENABLE_BLE_HID       // HID mouse profile — "Virtual Mouse"
-#define ENABLE_BLE_RAW_DATA  // Raw IMU GATT service — "VM-Raw"
-// Comment out either to strip that feature from the build entirely.
-// If both are commented out, BLE is not initialised at all.
+#define ENABLE_BLE_HID           // HID mouse profile — "Virtual Mouse"
+#define ENABLE_BLE_RAW_DATA      // Raw IMU GATT service — "VM-Raw"
+#define ENABLE_NRF53_AS_CENTRAL  // BLE Central link out to an ESP32 (see below)
+// Comment out any of these to strip that feature from the build entirely.
+// If all three are commented out, BLE is not initialised at all.
 ```
+
+### Board mounting orientation
+```c
+#define IMU_MOUNT_Y_DOWN   // or IMU_MOUNT_Z_UP — define exactly one
+```
+Required — there is no runtime auto-detection. Picking neither is a compile error.
 
 ### Boot mode
 ```c
@@ -107,11 +117,6 @@ All tunable parameters live in one place.
 // Total calibration window: ~6 seconds. Hold the device still.
 ```
 
-### BLE raw batch size
-```c
-#define BLE_RAW_BATCH_SIZE  3  // IMU samples per GATT notification (3 × 16 = 48 bytes)
-```
-
 ### Debugging
 ```c
 //#define ENABLE_UART_DEBUGGING  // uncomment for verbose [cal]/[gyro]/[imu] output
@@ -121,14 +126,39 @@ All tunable parameters live in one place.
 
 ## BLE Devices
 
-Two separate BLE identities advertise simultaneously (extended advertising, one adv set each).
+Two peripheral identities advertise simultaneously (extended advertising, one adv set each), plus one optional outgoing central link:
 
-| Name | Identity | Profile | Who connects |
-|---|---|---|---|
-| `Virtual Mouse` | 0 | HID over GATT | macOS / Windows — appears as a standard mouse |
-| `VM-Raw` | 1 | Custom GATT notify | Python client (`ble_imu_client.py`) |
+| Name | Identity | Role | Profile | Who connects |
+|---|---|---|---|---|
+| `Virtual Mouse` | 0 | Peripheral | HID over GATT | macOS / Windows — appears as a standard mouse |
+| `VM-Raw` | 1 | Peripheral | Custom GATT notify | Python client (`ble_imu_client.py`) |
+| *(ESP32's own name)* | — | Central | Custom GATT client | nRF53 connects out to an ESP32 running the paired sketch |
 
 > **Note:** `VM-Raw` does not appear in macOS Bluetooth Settings — macOS only surfaces devices with recognised profiles (HID, audio). Use nRF Connect or the Python client to connect.
+
+Each BLE role (HID, Raw, Central) is fully self-contained in its own source file — `src/ble_hid.c`, `src/ble_raw_data.c`, `src/ble_central.c` — with its own advertising/scanning and connection lifecycle. `src/main.c` only composes them and dispatches mode changes.
+
+---
+
+## BLE Central — ESP32 Command Link (`ENABLE_NRF53_AS_CENTRAL`)
+
+When enabled, the nRF53 additionally acts as a BLE **Central**: it scans for, connects to, and subscribes to notifications from an ESP32 GATT server, then maps each incoming ASCII command to one of the DK's 4 LEDs (LED1-LED4 / `led0`-`led3`).
+
+**ESP32-side service (must match):**
+```c
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+const char* commands[] = {"cmd1", "cmd2", "cmd3", "cmd4"};
+```
+
+| Command | LED | Behavior |
+|---|---|---|
+| `cmd1` | LED1 (`led0`) | Toggle |
+| `cmd2` | LED2 (`led1`) | Toggle |
+| `cmd3` | LED3 (`led2`) | Toggle |
+| `cmd4` | LED4 (`led3`) | Toggle |
+
+Each command **toggles** its LED's current state (not exclusive — multiple LEDs can be on at once). Scanning restarts automatically on disconnect. This link runs independently of the IMU output modes above and of the two peripheral identities — see `src/ble_central.c`.
 
 ---
 
@@ -166,13 +196,15 @@ timestamp,ax,ay,az,gx,gy,gz
 ## Network Core
 
 `child_image/hci_ipc.conf` configures the SDC controller on the network core.  
-Key settings for dual advertising:
+Key settings for dual advertising + the optional central link:
 
 ```
 CONFIG_BT_CTLR_ADV_SET=2
 CONFIG_BT_CTLR_ADV_EXT=y
-CONFIG_BT_MAX_CONN=3
+CONFIG_BT_MAX_CONN=4
 CONFIG_BT_CTLR_SDC_PERIPHERAL_COUNT=2
 ```
 
-Do not reduce `PERIPHERAL_COUNT` — each connectable advertising set consumes one peripheral slot, and dropping to 1 causes the second `bt_le_ext_adv_start` to fail with `-ENOMEM`.
+`CONFIG_BT_MAX_CONN` must match the app core's `prj.conf` value. It covers: the HID connection, the Raw connection, the ESP32 central connection, and one pending-adv pre-allocation slot (Zephyr reserves a `bt_conn` when starting connectable advertising).
+
+Do not reduce `PERIPHERAL_COUNT` below 2 — each connectable advertising set consumes one peripheral slot, and dropping to 1 causes the second `bt_le_ext_adv_start` to fail with `-ENOMEM`. The SDC's central-link count is derived as `BT_MAX_CONN - BT_CTLR_SDC_PERIPHERAL_COUNT`, so it must stay ≥ 1 whenever `ENABLE_NRF53_AS_CENTRAL` is used.

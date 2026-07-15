@@ -12,14 +12,12 @@
  *   Using the FIFO + hardware timestamps solves both: the sensor buffers data
  *   independently of the CPU, and each word carries its own precise timestamp.
  *
- * Hardware path:
- *   nRF5340 → I2C1 (arduino_i2c, 400 kHz) → LSM6DSO at 0x6B
  *
  * FIFO configuration:
  *   - Continuous mode (oldest data discarded on overflow, never stalls)
  *   - Accel + gyro batched at the selected ODR (default set by IMU_RATE_IDX)
  *   - Hardware timestamp inserted every sample (decimation = 1)
- *   - FIFO depth: 512 words; 3 words per sample → ~170 samples max
+ *   - FIFO depth: 512 words; 3 words per sample ~170 samples max
  *
  */
 
@@ -203,8 +201,6 @@ static int lsm6dso_check_id(void) {
 
 /*
  * Apply the rate at index `idx` from k_rates[].
- * Sequence: bypass FIFO → update ODR → update BDR → re-enable FIFO.
- * Bypassing first clears any stale data from the previous rate.
  */
 static int lsm6dso_set_rate(int idx) {
     const struct rate_cfg* r = &k_rates[idx];

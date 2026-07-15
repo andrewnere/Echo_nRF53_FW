@@ -113,8 +113,6 @@ static void apply_remap(float v[3]) {
 
 /* ============================================================
  * initQuaternionGRV — reset the GRV quaternion to identity.
- * Matches initQuaternionGRV() in the author's own fusion.c; used both at
- * state reset and on numeric degeneracy in updateQuaternionGRV() below.
  * ============================================================ */
 static void initQuaternionGRV(void) {
     s_qEstGRV[0] = 1.0f; s_qEstGRV[1] = 0.0f; s_qEstGRV[2] = 0.0f; s_qEstGRV[3] = 0.0f;
@@ -122,9 +120,7 @@ static void initQuaternionGRV(void) {
 
 /* ============================================================
  * updateQuaternionGRV — Game Rotation Vector update (gradient-descent
- * accel+gyro fusion, no magnetometer). Variable names follow the GRV
- * section of the author's own fusion.c (SensorFusion/) for easy
- * cross-reference against that implementation.
+ * accel+gyro fusion, no magnetometer). 
  *
  * Inputs:
  *   gx_dps, gy_dps, gz_dps — gyro in degrees per second
@@ -173,9 +169,7 @@ static void updateQuaternionGRV(float gx_dps, float gy_dps, float gz_dps,
     float qGyro_Y = gy_dps * DEG2RAD;
     float qGyro_Z = gz_dps * DEG2RAD;
 
-    /* --- Quaternion rate of change (qGyroDerivative, with -betaGRV*qDelF
-     * folded in here rather than at the integration step as the original
-     * does — numerically identical, one less pair of temporaries). --- */
+
     float betaGRV = IMU_MADGWICK_BETA;
     float qGyroDerivative_W = 0.5f*(-qEstGRV_X*qGyro_X - qEstGRV_Y*qGyro_Y - qEstGRV_Z*qGyro_Z) - betaGRV*qDelF_W;
     float qGyroDerivative_X = 0.5f*( qEstGRV_W*qGyro_X + qEstGRV_Y*qGyro_Z - qEstGRV_Z*qGyro_Y) - betaGRV*qDelF_X;
@@ -225,12 +219,7 @@ static void convertQuaternionToEuler(float *roll, float *pitch, float *yaw) {
  * Calibration phase
  *
  * Called for each of the first IMU_CAL_SAMPLES samples.  Accumulates gyro and
- * accel sums, runs updateQuaternionGRV() (so it converges during the idle
- * calibration window), and on the last sample:
- *   1. Computes gyro bias and gravity vector from the means.
- *   2. Detects mounting and builds the remap matrix.
- *   3. Sets s_calibrated = true.
- *
+ * accel sums, runs updateQuaternionGRV() 
  * Raw accel/gyro inputs are in raw LSB counts (not yet converted to g / dps).
  * ============================================================ */
 static void calibration_update(float ax_raw, float ay_raw, float az_raw,
@@ -405,7 +394,7 @@ static void fusion_update(float ax_raw, float ay_raw, float az_raw,
 /* ============================================================
  * Mouse delta computation (Stage 2)
  *
- * Rate-independent EMA smoothing → angular delta → deadzone → sensitivity.
+ * Rate-independent EMA smoothing.
  * Writes integer dx/dy into *out_dx and *out_dy via sub-pixel accumulation.
  * Returns true if at least one axis is non-zero.
  * ============================================================ */

@@ -114,11 +114,4 @@
 #define MOUSE_DEADZONE_Y     0.1f    /* degrees */
 #define MOUSE_SMOOTH_TAU     0.06f   /* EMA time constant for output smoothing (seconds) */
 
-/* Batch N IMU samples into one BLE notification.
- * Payload = N × 16 bytes; requires ATT MTU > (N×16 + 3).
- * CONFIG_BT_L2CAP_TX_MTU=100 supports up to 6 samples (96 bytes).
- *   3 → ~17 notify/sec at 52 Hz  (current config)
- */
-#define BLE_RAW_BATCH_SIZE  1
-
 #endif /* APP_CONFIG_H */

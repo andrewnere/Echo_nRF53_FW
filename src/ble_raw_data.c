@@ -164,20 +164,16 @@ static void drain_work_fn(struct k_work *work)
 {
     ARG_UNUSED(work);
 
-    uint32_t avail = s_ring_head - s_ring_tail;
-    if (avail < BLE_RAW_BATCH_SIZE) {
+    if (s_ring_head == s_ring_tail) {
         return;
     }
 
-    struct imu_notify_payload batch[BLE_RAW_BATCH_SIZE];
-    for (int i = 0; i < BLE_RAW_BATCH_SIZE; i++) {
-        batch[i] = s_ring[(s_ring_tail + i) & RING_MASK];
-    }
+    struct imu_notify_payload sample = s_ring[s_ring_tail & RING_MASK];
 
-    int err = bt_gatt_notify(NULL, &imu_svc.attrs[2], batch, sizeof(batch));
+    int err = bt_gatt_notify(NULL, &imu_svc.attrs[2], &sample, sizeof(sample));
     if (err == 0) {
-        s_ring_tail += BLE_RAW_BATCH_SIZE;
-        if ((s_ring_head - s_ring_tail) >= BLE_RAW_BATCH_SIZE) {
+        s_ring_tail++;
+        if (s_ring_head != s_ring_tail) {
             k_work_schedule(&s_drain_work, K_MSEC(10));
         }
     } else if (err == -ENOMEM) {
@@ -202,9 +198,7 @@ static void on_imu_sample(const struct imu_sample *s) {
     };
     s_ring_head++;
 
-    if ((s_ring_head - s_ring_tail) >= BLE_RAW_BATCH_SIZE) {
-        k_work_schedule(&s_drain_work, K_NO_WAIT);
-    }
+    k_work_schedule(&s_drain_work, K_NO_WAIT);
 }
 
 void ble_raw_data_init(void) {
